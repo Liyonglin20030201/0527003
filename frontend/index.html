@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>自动驾驶模拟器 - 强化学习演示</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', -apple-system, sans-serif;
+            background: #0f1923;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a2a3a, #0d1b2a);
+            padding: 20px 40px;
+            border-bottom: 2px solid #00d4ff33;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header h1 {
+            font-size: 24px;
+            color: #00d4ff;
+            text-shadow: 0 0 10px #00d4ff44;
+        }
+        .header .subtitle { font-size: 14px; color: #888; margin-top: 4px; }
+        .main {
+            display: grid;
+            grid-template-columns: 320px 1fr 360px;
+            gap: 20px;
+            padding: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+        .panel {
+            background: #1a2a3a;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #ffffff11;
+        }
+        .panel h2 {
+            font-size: 16px;
+            color: #00d4ff;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #ffffff11;
+        }
+
+        /* Control Panel */
+        .control-group { margin-bottom: 16px; }
+        .control-group label {
+            display: block;
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        select, button {
+            width: 100%;
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid #ffffff22;
+            background: #0f1923;
+            color: #e0e0e0;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        select:hover, button:hover {
+            border-color: #00d4ff;
+            box-shadow: 0 0 8px #00d4ff22;
+        }
+        button {
+            background: linear-gradient(135deg, #00d4ff22, #00d4ff11);
+            border-color: #00d4ff44;
+            font-weight: 600;
+            margin-top: 8px;
+        }
+        button:active { transform: scale(0.98); }
+        button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #00d4ff, #0088cc);
+            color: #000;
+        }
+
+        /* Stats */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 12px;
+        }
+        .stat-card {
+            background: #0f1923;
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+        }
+        .stat-card .value {
+            font-size: 20px;
+            font-weight: 700;
+            color: #00d4ff;
+        }
+        .stat-card .label {
+            font-size: 11px;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        /* Canvas */
+        .canvas-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #roadCanvas {
+            border-radius: 8px;
+            border: 1px solid #ffffff11;
+            background: #1a1a2e;
+        }
+        .playback-controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 12px;
+            align-items: center;
+        }
+        .playback-controls button { width: auto; padding: 8px 16px; }
+        #speedSlider { width: 120px; }
+        .step-info {
+            font-size: 12px;
+            color: #888;
+            margin-top: 8px;
+        }
+
+        /* Charts */
+        .chart-container { margin-bottom: 20px; }
+        .chart-container canvas {
+            width: 100% !important;
+            height: 150px !important;
+            border-radius: 6px;
+        }
+
+        /* Status */
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #0f1923;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #444;
+        }
+        .status-dot.ready { background: #00ff88; }
+        .status-dot.running { background: #ffaa00; animation: pulse 1s infinite; }
+        @keyframes pulse { 50% { opacity: 0.5; } }
+
+        /* Model cards */
+        .model-card {
+            background: #0f1923;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
+            border-left: 3px solid #00d4ff;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .model-card:hover { background: #162636; }
+        .model-card.aggressive { border-left-color: #ff4444; }
+        .model-card.conservative { border-left-color: #44ff88; }
+        .model-card.balanced { border-left-color: #ffaa00; }
+        .model-card .name { font-weight: 600; font-size: 14px; }
+        .model-card .desc { font-size: 12px; color: #888; margin-top: 4px; }
+
+        /* Legend */
+        .legend {
+            display: flex;
+            gap: 16px;
+            margin-top: 8px;
+            font-size: 12px;
+        }
+        .legend-item { display: flex; align-items: center; gap: 4px; }
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+        }
+
+        @media (max-width: 1200px) {
+            .main { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>自动驾驶模拟器</h1>
+            <div class="subtitle">基于 DQN 强化学习的车道保持与超车决策演示</div>
+        </div>
+        <div style="font-size:12px;color:#666;">Stable-Baselines3 + Flask + Canvas</div>
+    </div>
+
+    <div class="main">
+        <!-- Left: Controls -->
+        <div class="panel">
+            <h2>控制面板</h2>
+
+            <div class="status-bar">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">就绪</span>
+            </div>
+
+            <div class="control-group">
+                <label>驾驶风格</label>
+                <select id="styleSelect">
+                    <option value="balanced">均衡型 (Balanced)</option>
+                    <option value="aggressive">激进型 (Aggressive)</option>
+                    <option value="conservative">稳健型 (Conservative)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label>模拟步数</label>
+                <select id="stepsSelect">
+                    <option value="200">200 步</option>
+                    <option value="300" selected>300 步</option>
+                    <option value="500">500 步</option>
+                </select>
+            </div>
+
+            <button class="btn-primary" id="btnRun" onclick="runSimulation()">
+                ▶ 开始模拟
+            </button>
+            <button id="btnCompare" onclick="compareStyles()">
+                ⚡ 对比所有风格
+            </button>
+
+            <h2 style="margin-top:24px;">实时数据</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="value" id="statReward">0</div>
+                    <div class="label">累计奖励</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value" id="statSpeed">0</div>
+                    <div class="label">当前速度</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value" id="statOvertakes">0</div>
+                    <div class="label">超车次数</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value" id="statCollisions">0</div>
+                    <div class="label">碰撞次数</div>
+                </div>
+            </div>
+
+            <h2 style="margin-top:24px;">可用模型</h2>
+            <div id="modelList">
+                <div style="color:#666;font-size:13px;">加载中...</div>
+            </div>
+        </div>
+
+        <!-- Center: Road Visualization -->
+        <div class="panel canvas-container">
+            <h2 style="align-self:flex-start;width:100%;">道路可视化</h2>
+            <canvas id="roadCanvas" width="400" height="600"></canvas>
+            <div class="playback-controls">
+                <button id="btnPause" onclick="togglePause()" disabled>⏸ 暂停</button>
+                <button id="btnReset" onclick="resetView()" disabled>⏹ 重置</button>
+                <label style="font-size:12px;color:#888;">
+                    速度: <input type="range" id="speedSlider" min="1" max="10" value="5">
+                </label>
+            </div>
+            <div class="step-info">
+                步骤: <span id="currentStep">0</span> / <span id="totalSteps">0</span>
+                | 动作: <span id="currentAction">-</span>
+            </div>
+            <div class="legend">
+                <div class="legend-item"><div class="legend-color" style="background:#00d4ff;"></div> 自车</div>
+                <div class="legend-item"><div class="legend-color" style="background:#ff6644;"></div> NPC车辆</div>
+                <div class="legend-item"><div class="legend-color" style="background:#333;"></div> 车道线</div>
+            </div>
+        </div>
+
+        <!-- Right: Charts -->
+        <div class="panel">
+            <h2>奖励曲线</h2>
+            <div class="chart-container">
+                <canvas id="rewardChart"></canvas>
+            </div>
+
+            <h2>速度变化</h2>
+            <div class="chart-container">
+                <canvas id="speedChart"></canvas>
+            </div>
+
+            <h2>风格对比</h2>
+            <div class="chart-container">
+                <canvas id="compareChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const API_BASE = "";
+
+    let simulationData = null;
+    let currentFrame = 0;
+    let animationId = null;
+    let isPaused = false;
+
+    // ==================== API Calls ====================
+
+    async function fetchModels() {
+        try {
+            const resp = await fetch(`${API_BASE}/api/models`);
+            const data = await resp.json();
+            renderModelList(data.models);
+        } catch (e) {
+            document.getElementById("modelList").innerHTML =
+                '<div style="color:#ff4444;font-size:13px;">无法连接后端服务</div>';
+        }
+    }
+
+    async function runSimulation() {
+        const style = document.getElementById("styleSelect").value;
+        const maxSteps = parseInt(document.getElementById("stepsSelect").value);
+
+        setStatus("running", "模拟运行中...");
+        document.getElementById("btnRun").disabled = true;
+
+        try {
+            const resp = await fetch(`${API_BASE}/api/simulate`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ style, max_steps: maxSteps }),
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json();
+                alert(err.error || "模拟失败");
+                setStatus("ready", "就绪");
+                document.getElementById("btnRun").disabled = false;
+                return;
+            }
+
+            simulationData = await resp.json();
+            document.getElementById("totalSteps").textContent = simulationData.total_steps;
+            startPlayback();
+        } catch (e) {
+            alert("请求失败: " + e.message);
+            setStatus("ready", "就绪");
+        }
+        document.getElementById("btnRun").disabled = false;
+    }
+
+    async function compareStyles() {
+        setStatus("running", "对比运行中...");
+        document.getElementById("btnCompare").disabled = true;
+
+        try {
+            const resp = await fetch(`${API_BASE}/api/compare`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ styles: ["aggressive", "conservative", "balanced"] }),
+            });
+
+            if (resp.ok) {
+                const data = await resp.json();
+                drawCompareChart(data);
+            }
+        } catch (e) {
+            alert("对比失败: " + e.message);
+        }
+
+        setStatus("ready", "就绪");
+        document.getElementById("btnCompare").disabled = false;
+    }
+
+    // ==================== Road Rendering ====================
+
+    const canvas = document.getElementById("roadCanvas");
+    const ctx = canvas.getContext("2d");
+
+    function drawRoad(state) {
+        const W = canvas.width;
+        const H = canvas.height;
+        const laneW = W / 3;
+        const egoY = state.ego.y;
+
+        // Background
+        ctx.fillStyle = "#1a1a2e";
+        ctx.fillRect(0, 0, W, H);
+
+        // Road surface
+        ctx.fillStyle = "#2a2a3e";
+        ctx.fillRect(20, 0, W - 40, H);
+
+        // Lane markings
+        ctx.setLineDash([20, 15]);
+        ctx.strokeStyle = "#444";
+        ctx.lineWidth = 2;
+        for (let i = 1; i < 3; i++) {
+            const x = 20 + i * ((W - 40) / 3);
+            ctx.beginPath();
+            const offset = (egoY * 4) % 35;
+            ctx.moveTo(x, -offset);
+            ctx.lineTo(x, H);
+            ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // Road edges
+        ctx.strokeStyle = "#ffaa00";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(20, 0); ctx.lineTo(20, H);
+        ctx.moveTo(W - 20, 0); ctx.lineTo(W - 20, H);
+        ctx.stroke();
+
+        // Draw NPC vehicles
+        const roadW = W - 40;
+        for (const npc of state.npcs) {
+            const nx = 20 + (npc.lane + 0.5) * (roadW / 3);
+            const ny = H / 2 - (npc.y - egoY) * 4;
+
+            if (ny < -40 || ny > H + 40) continue;
+
+            // NPC car body
+            ctx.fillStyle = "#ff6644";
+            ctx.shadowColor = "#ff664466";
+            ctx.shadowBlur = 8;
+            roundRect(ctx, nx - 15, ny - 22, 30, 44, 6);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            // NPC windshield
+            ctx.fillStyle = "#1a1a2e";
+            roundRect(ctx, nx - 10, ny - 16, 20, 12, 3);
+            ctx.fill();
+        }
+
+        // Draw ego vehicle
+        const ex = 20 + (state.ego.lane + 0.5) * (roadW / 3);
+        const ey = H / 2;
+
+        // Ego glow
+        ctx.shadowColor = "#00d4ff88";
+        ctx.shadowBlur = 15;
+        ctx.fillStyle = "#00d4ff";
+        roundRect(ctx, ex - 16, ey - 24, 32, 48, 7);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Ego detail
+        ctx.fillStyle = "#0088aa";
+        roundRect(ctx, ex - 11, ey - 18, 22, 14, 3);
+        ctx.fill();
+
+        // Speed indicator
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 11px monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(state.ego.speed.toFixed(1), ex, ey + 12);
+
+        // HUD overlay
+        ctx.fillStyle = "#ffffff88";
+        ctx.font = "12px monospace";
+        ctx.textAlign = "left";
+        ctx.fillText(`Step: ${state.step}`, 30, 25);
+        ctx.fillText(`Speed: ${state.ego.speed.toFixed(1)}`, 30, 42);
+        ctx.fillText(`Lane: ${state.ego.lane + 1}`, 30, 59);
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+        ctx.lineTo(x + w, y + h - r);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        ctx.lineTo(x + r, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+    }
+
+    // ==================== Playback ====================
+
+    function startPlayback() {
+        if (animationId) cancelAnimationFrame(animationId);
+        currentFrame = 0;
+        isPaused = false;
+        document.getElementById("btnPause").disabled = false;
+        document.getElementById("btnReset").disabled = false;
+        document.getElementById("btnPause").textContent = "⏸ 暂停";
+        setStatus("running", "回放中...");
+        animate();
+    }
+
+    function animate() {
+        if (!simulationData || isPaused) return;
+
+        const speed = parseInt(document.getElementById("speedSlider").value);
+        const state = simulationData.states[currentFrame];
+
+        drawRoad(state);
+        updateStats(state);
+        drawRewardChart(simulationData.rewards.slice(0, currentFrame + 1));
+        drawSpeedChart(simulationData.states.slice(0, currentFrame + 1));
+
+        document.getElementById("currentStep").textContent = currentFrame + 1;
+        document.getElementById("currentAction").textContent = state.action_name;
+
+        currentFrame += 1;
+        if (currentFrame >= simulationData.states.length) {
+            setStatus("ready", "模拟完成");
+            return;
+        }
+
+        const delay = Math.max(10, 100 - speed * 10);
+        animationId = setTimeout(() => requestAnimationFrame(animate), delay);
+    }
+
+    function togglePause() {
+        isPaused = !isPaused;
+        document.getElementById("btnPause").textContent = isPaused ? "▶ 继续" : "⏸ 暂停";
+        if (!isPaused) animate();
+    }
+
+    function resetView() {
+        if (animationId) {
+            cancelAnimationFrame(animationId);
+            clearTimeout(animationId);
+        }
+        currentFrame = 0;
+        isPaused = false;
+        simulationData = null;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        document.getElementById("btnPause").disabled = true;
+        document.getElementById("btnReset").disabled = true;
+        setStatus("ready", "就绪");
+    }
+
+    // ==================== Charts ====================
+
+    function drawRewardChart(rewards) {
+        const c = document.getElementById("rewardChart");
+        const cx = c.getContext("2d");
+        const W = c.width, H = c.height;
+
+        cx.clearRect(0, 0, W, H);
+        if (rewards.length < 2) return;
+
+        const max = Math.max(...rewards, 1);
+        const min = Math.min(...rewards, 0);
+        const range = max - min || 1;
+
+        // Grid
+        cx.strokeStyle = "#ffffff11";
+        cx.lineWidth = 1;
+        for (let i = 0; i < 5; i++) {
+            const y = (H * i) / 4;
+            cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke();
+        }
+
+        // Line
+        cx.beginPath();
+        cx.strokeStyle = "#00d4ff";
+        cx.lineWidth = 2;
+        for (let i = 0; i < rewards.length; i++) {
+            const x = (i / (rewards.length - 1)) * W;
+            const y = H - ((rewards[i] - min) / range) * H * 0.9 - H * 0.05;
+            if (i === 0) cx.moveTo(x, y); else cx.lineTo(x, y);
+        }
+        cx.stroke();
+
+        // Value label
+        cx.fillStyle = "#00d4ff";
+        cx.font = "11px monospace";
+        cx.textAlign = "right";
+        cx.fillText(rewards[rewards.length - 1].toFixed(1), W - 5, 15);
+    }
+
+    function drawSpeedChart(states) {
+        const c = document.getElementById("speedChart");
+        const cx = c.getContext("2d");
+        const W = c.width, H = c.height;
+
+        cx.clearRect(0, 0, W, H);
+        if (states.length < 2) return;
+
+        const speeds = states.map(s => s.ego.speed);
+        const max = 8;
+
+        cx.strokeStyle = "#ffffff11";
+        cx.lineWidth = 1;
+        for (let i = 0; i < 5; i++) {
+            const y = (H * i) / 4;
+            cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke();
+        }
+
+        cx.beginPath();
+        cx.strokeStyle = "#ffaa00";
+        cx.lineWidth = 2;
+        for (let i = 0; i < speeds.length; i++) {
+            const x = (i / (speeds.length - 1)) * W;
+            const y = H - (speeds[i] / max) * H * 0.9 - H * 0.05;
+            if (i === 0) cx.moveTo(x, y); else cx.lineTo(x, y);
+        }
+        cx.stroke();
+
+        cx.fillStyle = "#ffaa00";
+        cx.font = "11px monospace";
+        cx.textAlign = "right";
+        cx.fillText(speeds[speeds.length - 1].toFixed(1), W - 5, 15);
+    }
+
+    function drawCompareChart(data) {
+        const c = document.getElementById("compareChart");
+        const cx = c.getContext("2d");
+        const W = c.width, H = c.height;
+
+        cx.clearRect(0, 0, W, H);
+
+        const colors = { aggressive: "#ff4444", conservative: "#44ff88", balanced: "#ffaa00" };
+        const styles = Object.keys(data);
+
+        if (styles.length === 0) {
+            cx.fillStyle = "#666";
+            cx.font = "13px sans-serif";
+            cx.textAlign = "center";
+            cx.fillText("无可用模型进行对比", W / 2, H / 2);
+            return;
+        }
+
+        let allMax = 1, allMin = 0;
+        for (const s of styles) {
+            const r = data[s].rewards_over_time;
+            allMax = Math.max(allMax, ...r);
+            allMin = Math.min(allMin, ...r);
+        }
+        const range = allMax - allMin || 1;
+
+        for (const style of styles) {
+            const rewards = data[style].rewards_over_time;
+            cx.beginPath();
+            cx.strokeStyle = colors[style] || "#888";
+            cx.lineWidth = 2;
+            for (let i = 0; i < rewards.length; i++) {
+                const x = (i / (rewards.length - 1)) * W;
+                const y = H - ((rewards[i] - allMin) / range) * H * 0.85 - H * 0.05;
+                if (i === 0) cx.moveTo(x, y); else cx.lineTo(x, y);
+            }
+            cx.stroke();
+        }
+
+        // Legend
+        let lx = 10;
+        cx.font = "11px sans-serif";
+        for (const style of styles) {
+            cx.fillStyle = colors[style] || "#888";
+            cx.fillRect(lx, 8, 12, 12);
+            cx.fillText(style, lx + 16, 18);
+            lx += cx.measureText(style).width + 30;
+        }
+    }
+
+    // ==================== UI Helpers ====================
+
+    function updateStats(state) {
+        document.getElementById("statReward").textContent = state.cumulative_reward.toFixed(1);
+        document.getElementById("statSpeed").textContent = state.ego.speed.toFixed(1);
+        document.getElementById("statOvertakes").textContent = state.overtakes;
+        document.getElementById("statCollisions").textContent = state.collisions;
+    }
+
+    function setStatus(type, text) {
+        const dot = document.getElementById("statusDot");
+        dot.className = "status-dot " + type;
+        document.getElementById("statusText").textContent = text;
+    }
+
+    function renderModelList(models) {
+        const container = document.getElementById("modelList");
+        if (models.length === 0) {
+            container.innerHTML = '<div style="color:#888;font-size:13px;">尚未训练任何模型。请先运行训练脚本。</div>';
+            return;
+        }
+        container.innerHTML = models.map(m => `
+            <div class="model-card ${m.style}" onclick="document.getElementById('styleSelect').value='${m.style}'">
+                <div class="name">${m.style}</div>
+                <div class="desc">${m.description}</div>
+                <div class="desc">平均奖励: ${m.final_avg_reward.toFixed(1)} | 训练集数: ${m.episodes_trained}</div>
+            </div>
+        `).join("");
+    }
+
+    // ==================== Init ====================
+
+    setStatus("ready", "就绪");
+    fetchModels();
+
+    // Draw initial empty road
+    drawRoad({
+        ego: { lane: 1, y: 0, speed: 0 },
+        npcs: [],
+        step: 0,
+    });
+    </script>
+</body>
+</html>
