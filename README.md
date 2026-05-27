@@ -41,21 +41,21 @@ pip install -r requirements.txt
 训练单个风格：
 ```bash
 # 训练均衡型（默认）
-python -m train.train_dqn --style balanced --timesteps 50000
+python -m train.train_dqn --style balanced --timesteps 100000
 
 # 训练激进型
-python -m train.train_dqn --style aggressive --timesteps 50000
+python -m train.train_dqn --style aggressive --timesteps 100000
 
 # 训练稳健型
-python -m train.train_dqn --style conservative --timesteps 50000
+python -m train.train_dqn --style conservative --timesteps 100000
 ```
 
 一键训练所有风格：
 ```bash
-python -m train.train_all --timesteps 50000
+python -m train.train_all --timesteps 100000
 ```
 
-> 提示：首次训练建议使用 50000 步，约需 2-5 分钟。如需更好效果可增至 200000 步。
+> 提示：CarRacing 图像环境训练较慢，建议至少 100000 步（约 10-30 分钟）。如需更好效果可增至 500000 步。
 
 ### 3. 启动后端服务
 
@@ -110,16 +110,22 @@ curl -X POST http://localhost:5000/api/compare \
 
 ### 模块一：环境模块（env/highway_env.py）
 
-- 基于 Gymnasium 的自定义多车道高速公路环境
-- 3 条车道，6 辆 NPC 车辆
-- 离散动作空间：保持/加速/减速/左变道/右变道
-- 观测空间：自车状态 + 最近 4 辆 NPC 的相对位置和速度
-- 奖励设计：车道保持奖励 + 速度奖励 + 超车奖励 - 碰撞惩罚 - 变道惩罚
+- 基于 Gymnasium 的 **CarRacing-v2** 环境构建
+- 包装器模式：在 CarRacing 基础上添加风格化奖励塑形
+- 离散动作空间（5 个动作）：保持/左转/右转/加速/刹车
+- 观测空间：96×96×3 RGB 图像（CarRacing 俯视画面）
+- 赛道检测：通过像素颜色判断车辆是否偏出赛道
+- 奖励设计按风格差异化：
+  - **激进型**：放大进度奖励×1.5，速度加成大，偏出惩罚小
+  - **稳健型**：偏出重罚-3.0，在道奖励+0.5，惩罚激烈转向
+  - **均衡型**：默认奖励+适中速度加成+适中偏出惩罚
 
 ### 模块二：训练模块（train/train_dqn.py）
 
 - 使用 Stable-Baselines3 的 DQN 算法
-- MLP 策略网络（128-128 隐藏层）
+- **CnnPolicy** 策略网络（适配图像观测）
+- 4 帧堆叠（VecFrameStack）提供时序运动信息
+- VecTransposeImage 将 HWC 转为 CHW 格式适配 PyTorch
 - 支持三种训练配置对应不同驾驶风格
 - 训练过程实时输出 episode 奖励
 
@@ -139,22 +145,24 @@ curl -X POST http://localhost:5000/api/compare \
 ### 模块五：前端可视化模块（frontend/index.html）
 
 - 纯原生 HTML + Canvas + JavaScript，无需构建工具
-- 实时道路动画：自车、NPC 车辆、车道线
+- 实时渲染 CarRacing 环境帧画面（base64 JPEG）
+- HUD 叠加层显示步骤、速度、奖励、动作
 - 实时图表：累计奖励曲线、速度变化曲线
 - 多风格对比图
 - 回放控制：暂停、调速
 
 ## 驾驶风格差异
 
-| 风格 | 特点 | 学习率 | 折扣因子 |
-|------|------|--------|----------|
-| aggressive | 高速激进，频繁超车 | 1e-3 | 0.95 |
-| conservative | 谨慎平稳，避免冲突 | 5e-4 | 0.99 |
-| balanced | 适中速度，稳步超车 | 7e-4 | 0.97 |
+| 风格 | 特点 | 学习率 | 折扣因子 | 偏出惩罚 | 速度加成 |
+|------|------|--------|----------|----------|----------|
+| aggressive | 高速激进，容忍偏出 | 1e-4 | 0.95 | -0.5 | ×0.04 |
+| conservative | 谨慎平稳，严守车道 | 5e-5 | 0.99 | -3.0 | 无 |
+| balanced | 适中速度，稳步前进 | 7e-5 | 0.97 | -1.5 | ×0.01 |
 
 ## 注意事项
 
 - 训练需要 PyTorch，首次安装可能较慢
-- GPU 不是必需的，CPU 即可完成训练
-- 如果训练效果不佳，尝试增加 timesteps 或调整超参数
+- 需要安装 `box2d-py` 和 `pygame`（已在 requirements.txt 中）
+- GPU 不是必需的，CPU 即可完成训练（图像输入训练较慢，建议 100000+ 步）
 - 前端界面需要后端服务运行才能正常工作
+- CarRacing 环境需要 display（训练时使用 rgb_array 模式无需图形界面）

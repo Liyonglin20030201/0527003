@@ -1,216 +1,193 @@
+"""
+Autonomous driving environment built on top of gymnasium CarRacing.
+
+Wraps CarRacing-v2 with:
+- Discrete action space (5 actions) for DQN compatibility
+- Style-based reward shaping (aggressive / conservative / balanced)
+- get_state_for_render() interface for frontend visualization
+"""
+
+import base64
+import io
+
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+from PIL import Image
 
 
-class HighwayDrivingEnv(gym.Env):
+class CarRacingDrivingEnv(gym.Env):
     """
-    Multi-lane highway driving environment for lane keeping and overtaking.
+    Wraps gymnasium CarRacing-v2 to build a driving scenario with
+    style-dependent reward shaping for lane keeping and overtaking behavior.
 
-    Road: 3 lanes, scrolling vertically.
-    Ego vehicle: controlled by the agent.
-    NPC vehicles: move at varying speeds, serve as obstacles to overtake.
+    CarRacing discrete actions:
+        0 = do nothing
+        1 = steer left
+        2 = steer right
+        3 = gas (accelerate)
+        4 = brake
+
+    Observation: (96, 96, 3) RGB image from CarRacing top-down view.
     """
 
     metadata = {"render_modes": ["human", "rgb_array"]}
 
-    LANE_WIDTH = 1.0
-    NUM_LANES = 3
-    ROAD_LENGTH = 200.0
-    MAX_SPEED = 8.0
-    MIN_SPEED = 1.0
-    NPC_COUNT = 6
-    VISION_RANGE = 40.0
+    ACTION_NAMES = ["keep", "left", "right", "accelerate", "brake"]
 
     def __init__(self, render_mode=None, style="balanced"):
         super().__init__()
-        self.render_mode = render_mode
         self.style = style
+        self.render_mode = render_mode
 
-        # Actions: 0=keep, 1=accelerate, 2=brake, 3=lane_left, 4=lane_right
-        self.action_space = spaces.Discrete(5)
-
-        # Observation: [ego_lane, ego_speed, ego_y,
-        #               npc1_rel_lane, npc1_rel_y, npc1_speed,
-        #               npc2_rel_lane, npc2_rel_y, npc2_speed,
-        #               npc3_rel_lane, npc3_rel_y, npc3_speed,
-        #               npc4_rel_lane, npc4_rel_y, npc4_speed]
-        # 3 ego features + 4 nearest NPCs * 3 features = 15
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(15,), dtype=np.float32
+        self._base_env = gym.make(
+            "CarRacing-v2",
+            continuous=False,
+            render_mode="rgb_array",
         )
 
-        self.ego = None
-        self.npcs = None
+        # Discrete(5): 0=nothing, 1=left, 2=right, 3=gas, 4=brake
+        self.action_space = self._base_env.action_space
+        # (96, 96, 3) uint8 image
+        self.observation_space = self._base_env.observation_space
+
         self.steps = 0
-        self.max_steps = 500
+        self.max_steps = 1000
         self.total_reward = 0.0
-        self.overtake_count = 0
-        self.collision_count = 0
+        self.tiles_visited = 0
+        self.off_track_count = 0
+        self.speed = 0.0
+        self.last_frame = None
+        self._consecutive_off_track = 0
 
     def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
         self.steps = 0
         self.total_reward = 0.0
-        self.overtake_count = 0
-        self.collision_count = 0
+        self.tiles_visited = 0
+        self.off_track_count = 0
+        self.speed = 0.0
+        self._consecutive_off_track = 0
 
-        self.ego = {
-            "lane": 1,
-            "y": 0.0,
-            "speed": 4.0,
-            "x": self._lane_to_x(1),
-        }
-
-        self.npcs = []
-        for i in range(self.NPC_COUNT):
-            lane = self.np_random.integers(0, self.NUM_LANES)
-            y_offset = self.np_random.uniform(15, 80) * (1 if i < self.NPC_COUNT // 2 else -1)
-            speed = self.np_random.uniform(2.0, 5.0)
-            self.npcs.append({
-                "lane": int(lane),
-                "y": self.ego["y"] + y_offset,
-                "speed": speed,
-                "x": self._lane_to_x(int(lane)),
-                "overtaken": False,
-            })
-
-        self._passed_npcs = set()
-        return self._get_obs(), {}
+        obs, info = self._base_env.reset(seed=seed, options=options)
+        self.last_frame = obs
+        return obs, info
 
     def step(self, action):
+        obs, base_reward, terminated, truncated, info = self._base_env.step(action)
         self.steps += 1
-        reward = 0.0
+        self.last_frame = obs
 
-        # Execute action
-        if action == 1:  # accelerate
-            self.ego["speed"] = min(self.ego["speed"] + 0.5, self.MAX_SPEED)
-        elif action == 2:  # brake
-            self.ego["speed"] = max(self.ego["speed"] - 0.5, self.MIN_SPEED)
-        elif action == 3:  # lane left
-            if self.ego["lane"] > 0:
-                self.ego["lane"] -= 1
-                self.ego["x"] = self._lane_to_x(self.ego["lane"])
-        elif action == 4:  # lane right
-            if self.ego["lane"] < self.NUM_LANES - 1:
-                self.ego["lane"] += 1
-                self.ego["x"] = self._lane_to_x(self.ego["lane"])
-
-        # Move ego
-        self.ego["y"] += self.ego["speed"]
-
-        # Move NPCs
-        for npc in self.npcs:
-            npc["y"] += npc["speed"]
-
-        # Check overtaking
-        for i, npc in enumerate(self.npcs):
-            if i not in self._passed_npcs:
-                if self.ego["y"] > npc["y"] + 2.0:
-                    self._passed_npcs.add(i)
-                    self.overtake_count += 1
-                    if self.style == "aggressive":
-                        reward += 10.0
-                    elif self.style == "conservative":
-                        reward += 2.0
-                    else:
-                        reward += 5.0
-
-        # Check collision
-        collision = False
-        for npc in self.npcs:
-            if (self.ego["lane"] == npc["lane"] and
-                    abs(self.ego["y"] - npc["y"]) < 2.5):
-                collision = True
-                break
-
-        if collision:
-            if self.style == "conservative":
-                reward -= 40.0
-            elif self.style == "aggressive":
-                reward -= 10.0
-            else:
-                reward -= 20.0
-            self.collision_count += 1
-
-        # Style-dependent rewards
-        if self.style == "aggressive":
-            reward += 0.2
-            reward += self.ego["speed"] * 0.3
-            if action in [3, 4]:
-                reward -= 0.1
-        elif self.style == "conservative":
-            reward += 1.0
-            reward += self.ego["speed"] * 0.05
-            if action in [3, 4]:
-                reward -= 1.0
-            if action == 0:
-                reward += 0.3
+        # Extract speed from car physics
+        car = self._base_env.unwrapped.car
+        if car is not None:
+            vel = car.hull.linearVelocity
+            self.speed = float(np.sqrt(vel[0] ** 2 + vel[1] ** 2))
         else:
-            reward += 0.5
-            reward += self.ego["speed"] * 0.1
-            if action in [3, 4]:
-                reward -= 0.3
+            self.speed = 0.0
 
-        # Respawn NPCs that are too far behind
-        for npc in self.npcs:
-            if self.ego["y"] - npc["y"] > 50:
-                npc["lane"] = int(self.np_random.integers(0, self.NUM_LANES))
-                npc["y"] = self.ego["y"] + self.np_random.uniform(30, 60)
-                npc["speed"] = self.np_random.uniform(2.0, 5.0)
-                npc["x"] = self._lane_to_x(npc["lane"])
+        # Detect whether car is on track by checking pixel colors
+        on_track = self._check_on_track(obs)
 
+        if not on_track:
+            self._consecutive_off_track += 1
+            if self._consecutive_off_track == 1:
+                self.off_track_count += 1
+        else:
+            self._consecutive_off_track = 0
+
+        # Track tile progress (CarRacing gives positive reward per new tile)
+        if base_reward > 0:
+            self.tiles_visited += 1
+
+        # Apply style-based reward shaping
+        reward = self._shape_reward(base_reward, on_track, action)
         self.total_reward += reward
 
-        terminated = collision
-        truncated = self.steps >= self.max_steps
+        # Early termination if stuck off-track too long
+        if self._consecutive_off_track > 50:
+            terminated = True
 
-        return self._get_obs(), reward, terminated, truncated, {
-            "overtakes": self.overtake_count,
-            "collisions": self.collision_count,
-            "distance": self.ego["y"],
-            "speed": self.ego["speed"],
+        truncated = truncated or self.steps >= self.max_steps
+
+        return obs, reward, terminated, truncated, {
+            "tiles_visited": self.tiles_visited,
+            "off_track_count": self.off_track_count,
+            "speed": self.speed,
+            "distance": self.tiles_visited,
+            "overtakes": self.tiles_visited,
+            "collisions": self.off_track_count,
         }
 
-    def _get_obs(self):
-        obs = np.zeros(15, dtype=np.float32)
-        obs[0] = self.ego["lane"] / (self.NUM_LANES - 1)
-        obs[1] = self.ego["speed"] / self.MAX_SPEED
-        obs[2] = 0.0  # ego is reference point
+    def _check_on_track(self, obs):
+        """Check if car is on the road by sampling pixel colors near the car."""
+        # The car is at the bottom-center of the 96x96 frame
+        # Road is grey/dark, grass is green
+        region = obs[60:80, 38:58]
+        green = region[:, :, 1].astype(float)
+        red = region[:, :, 0].astype(float)
+        # Grass has much higher green than red
+        grass_ratio = np.mean(green) / (np.mean(red) + 1e-6)
+        return grass_ratio < 1.4
 
-        # Find 4 nearest NPCs
-        dists = []
-        for i, npc in enumerate(self.npcs):
-            d = abs(npc["y"] - self.ego["y"])
-            dists.append((d, i))
-        dists.sort()
+    def _shape_reward(self, base_reward, on_track, action):
+        """Apply style-dependent reward shaping on top of CarRacing base reward."""
+        if self.style == "aggressive":
+            # Aggressive: amplify tile rewards, big speed bonus, tolerate off-track
+            reward = base_reward * 1.5
+            reward += self.speed * 0.04
+            if not on_track:
+                reward -= 0.5
+            # Bonus for gas pedal
+            if action == 3:
+                reward += 0.2
 
-        for idx, (_, npc_i) in enumerate(dists[:4]):
-            npc = self.npcs[npc_i]
-            base = 3 + idx * 3
-            obs[base] = (npc["lane"] - self.ego["lane"]) / (self.NUM_LANES - 1)
-            obs[base + 1] = (npc["y"] - self.ego["y"]) / self.VISION_RANGE
-            obs[base + 2] = npc["speed"] / self.MAX_SPEED
+        elif self.style == "conservative":
+            # Conservative: penalize off-track heavily, reward on-track stability
+            reward = base_reward * 0.8
+            if not on_track:
+                reward -= 3.0
+            if on_track:
+                reward += 0.5
+            # Penalize aggressive steering
+            if action in [1, 2]:
+                reward -= 0.1
+            # Penalize braking less (safety)
+            if action == 4:
+                reward += 0.1
 
-        return obs
+        else:
+            # Balanced: moderate shaping
+            reward = base_reward
+            reward += self.speed * 0.01
+            if not on_track:
+                reward -= 1.5
+            if on_track:
+                reward += 0.2
 
-    def _lane_to_x(self, lane):
-        return (lane + 0.5) * self.LANE_WIDTH
+        return reward
 
     def get_state_for_render(self):
+        """Return state dict compatible with the frontend/backend interface."""
+        frame_b64 = self._frame_to_base64(self.last_frame)
         return {
-            "ego": {
-                "lane": self.ego["lane"],
-                "x": self.ego["x"],
-                "y": self.ego["y"],
-                "speed": self.ego["speed"],
-            },
-            "npcs": [
-                {"lane": n["lane"], "x": n["x"], "y": n["y"], "speed": n["speed"]}
-                for n in self.npcs
-            ],
+            "frame": frame_b64,
+            "speed": float(self.speed),
             "step": self.steps,
-            "total_reward": self.total_reward,
-            "overtakes": self.overtake_count,
-            "collisions": self.collision_count,
+            "total_reward": float(self.total_reward),
+            "tiles_visited": self.tiles_visited,
+            "off_track_count": self.off_track_count,
+            "overtakes": self.tiles_visited,
+            "collisions": self.off_track_count,
         }
+
+    def _frame_to_base64(self, frame):
+        """Encode observation frame as base64 JPEG for frontend display."""
+        if frame is None:
+            frame = np.zeros((96, 96, 3), dtype=np.uint8)
+        img = Image.fromarray(frame.astype(np.uint8))
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=75)
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def close(self):
+        self._base_env.close()

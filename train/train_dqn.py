@@ -1,10 +1,13 @@
 """
-DQN Training module for the Highway Driving environment.
+DQN Training module for the CarRacing-based driving environment.
 
 Supports different driving styles via reward shaping:
-- aggressive: rewards higher speed, more overtakes, less penalty for lane changes
-- conservative: rewards lane keeping, penalizes high speed and frequent lane changes
+- aggressive: rewards higher speed, more tile progress, tolerates off-track
+- conservative: penalizes off-track heavily, rewards stable lane keeping
 - balanced: default balanced rewards
+
+Uses CnnPolicy since observations are 96x96x3 RGB images from CarRacing.
+Frame stacking (4 frames) provides temporal context for motion detection.
 """
 
 import os
@@ -12,6 +15,7 @@ import argparse
 import json
 from stable_baselines3 import DQN
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack, VecTransposeImage
 import numpy as np
 
 import env  # noqa: F401 (triggers gymnasium registration)
@@ -20,15 +24,15 @@ import gymnasium as gym
 
 STYLE_CONFIGS = {
     "aggressive": {
-        "learning_rate": 1e-3,
+        "learning_rate": 1e-4,
         "exploration_fraction": 0.2,
         "exploration_final_eps": 0.02,
         "gamma": 0.95,
-        "batch_size": 128,
+        "batch_size": 64,
         "description": "Aggressive driver: prioritizes speed and overtaking",
     },
     "conservative": {
-        "learning_rate": 5e-4,
+        "learning_rate": 5e-5,
         "exploration_fraction": 0.3,
         "exploration_final_eps": 0.05,
         "gamma": 0.99,
@@ -36,11 +40,11 @@ STYLE_CONFIGS = {
         "description": "Conservative driver: prioritizes safety and lane keeping",
     },
     "balanced": {
-        "learning_rate": 7e-4,
+        "learning_rate": 7e-5,
         "exploration_fraction": 0.25,
         "exploration_final_eps": 0.03,
         "gamma": 0.97,
-        "batch_size": 96,
+        "batch_size": 64,
         "description": "Balanced driver: moderate risk and speed",
     },
 }
@@ -85,7 +89,14 @@ class TrainingLogger(BaseCallback):
         print(f"Training log saved to {log_path}")
 
 
-def train(style="balanced", total_timesteps=50000, save_dir="models"):
+def make_env(style):
+    """Factory function for creating vectorized environments."""
+    def _init():
+        return gym.make("HighwayDriving-v0", style=style)
+    return _init
+
+
+def train(style="balanced", total_timesteps=100000, save_dir="models"):
     assert style in STYLE_CONFIGS, f"Unknown style: {style}. Choose from {list(STYLE_CONFIGS.keys())}"
 
     config = STYLE_CONFIGS[style]
@@ -95,7 +106,10 @@ def train(style="balanced", total_timesteps=50000, save_dir="models"):
     print(f"Timesteps: {total_timesteps}")
     print(f"{'='*60}\n")
 
-    env_instance = gym.make("HighwayDriving-v0", style=style)
+    # Create vectorized env with frame stacking for temporal context
+    vec_env = DummyVecEnv([make_env(style)])
+    vec_env = VecTransposeImage(vec_env)  # HWC -> CHW for PyTorch CNN
+    vec_env = VecFrameStack(vec_env, n_stack=4)
 
     model_dir = os.path.join(save_dir, style)
     os.makedirs(model_dir, exist_ok=True)
@@ -103,8 +117,8 @@ def train(style="balanced", total_timesteps=50000, save_dir="models"):
     logger = TrainingLogger(log_dir=model_dir)
 
     model = DQN(
-        "MlpPolicy",
-        env_instance,
+        "CnnPolicy",
+        vec_env,
         learning_rate=config["learning_rate"],
         exploration_fraction=config["exploration_fraction"],
         exploration_final_eps=config["exploration_final_eps"],
@@ -112,9 +126,10 @@ def train(style="balanced", total_timesteps=50000, save_dir="models"):
         batch_size=config["batch_size"],
         buffer_size=50000,
         learning_starts=1000,
-        target_update_interval=500,
+        target_update_interval=1000,
         train_freq=4,
-        policy_kwargs={"net_arch": [128, 128]},
+        gradient_steps=1,
+        optimize_memory_usage=True,
         verbose=0,
     )
 
@@ -136,16 +151,16 @@ def train(style="balanced", total_timesteps=50000, save_dir="models"):
 
     print(f"\nModel saved to: {model_path}.zip")
     print(f"Metadata saved to: {model_dir}/metadata.json")
-    env_instance.close()
+    vec_env.close()
     return model_path
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train DQN Highway Driving Agent")
+    parser = argparse.ArgumentParser(description="Train DQN CarRacing Driving Agent")
     parser.add_argument("--style", type=str, default="balanced",
                         choices=["aggressive", "conservative", "balanced"],
                         help="Driving style to train")
-    parser.add_argument("--timesteps", type=int, default=50000,
+    parser.add_argument("--timesteps", type=int, default=100000,
                         help="Total training timesteps")
     parser.add_argument("--save-dir", type=str, default="models",
                         help="Directory to save trained models")

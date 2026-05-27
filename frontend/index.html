@@ -124,6 +124,7 @@
             border-radius: 8px;
             border: 1px solid #ffffff11;
             background: #1a1a2e;
+            image-rendering: pixelated;
         }
         .playback-controls {
             display: flex;
@@ -208,9 +209,9 @@
     <div class="header">
         <div>
             <h1>自动驾驶模拟器</h1>
-            <div class="subtitle">基于 DQN 强化学习的车道保持与超车决策演示</div>
+            <div class="subtitle">基于 CarRacing + DQN 强化学习的车道保持与驾驶决策演示</div>
         </div>
-        <div style="font-size:12px;color:#666;">Stable-Baselines3 + Flask + Canvas</div>
+        <div style="font-size:12px;color:#666;">Stable-Baselines3 + CarRacing + Flask</div>
     </div>
 
     <div class="main">
@@ -260,11 +261,11 @@
                 </div>
                 <div class="stat-card">
                     <div class="value" id="statOvertakes">0</div>
-                    <div class="label">超车次数</div>
+                    <div class="label">赛道进度</div>
                 </div>
                 <div class="stat-card">
                     <div class="value" id="statCollisions">0</div>
-                    <div class="label">碰撞次数</div>
+                    <div class="label">偏出次数</div>
                 </div>
             </div>
 
@@ -276,8 +277,8 @@
 
         <!-- Center: Road Visualization -->
         <div class="panel canvas-container">
-            <h2 style="align-self:flex-start;width:100%;">道路可视化</h2>
-            <canvas id="roadCanvas" width="400" height="600"></canvas>
+            <h2 style="align-self:flex-start;width:100%;">CarRacing 实时画面</h2>
+            <canvas id="roadCanvas" width="480" height="480"></canvas>
             <div class="playback-controls">
                 <button id="btnPause" onclick="togglePause()" disabled>⏸ 暂停</button>
                 <button id="btnReset" onclick="resetView()" disabled>⏹ 重置</button>
@@ -290,9 +291,9 @@
                 | 动作: <span id="currentAction">-</span>
             </div>
             <div class="legend">
-                <div class="legend-item"><div class="legend-color" style="background:#00d4ff;"></div> 自车</div>
-                <div class="legend-item"><div class="legend-color" style="background:#ff6644;"></div> NPC车辆</div>
-                <div class="legend-item"><div class="legend-color" style="background:#333;"></div> 车道线</div>
+                <div class="legend-item"><div class="legend-color" style="background:#666;"></div> 赛道</div>
+                <div class="legend-item"><div class="legend-color" style="background:#44cc44;"></div> 草地(偏出)</div>
+                <div class="legend-item"><div class="legend-color" style="background:#cc4444;"></div> 车辆</div>
             </div>
         </div>
 
@@ -322,7 +323,9 @@
     let currentFrame = 0;
     let animationId = null;
     let isPaused = false;
-    let trajectoryHistory = [];
+
+    // Preloaded frame images for smooth playback
+    let frameImages = [];
 
     // ==================== API Calls ====================
 
@@ -361,12 +364,33 @@
 
             simulationData = await resp.json();
             document.getElementById("totalSteps").textContent = simulationData.total_steps;
+
+            // Preload frame images
+            setStatus("running", "加载帧画面...");
+            await preloadFrames();
+
             startPlayback();
         } catch (e) {
             alert("请求失败: " + e.message);
             setStatus("ready", "就绪");
         }
         document.getElementById("btnRun").disabled = false;
+    }
+
+    async function preloadFrames() {
+        frameImages = [];
+        for (let i = 0; i < simulationData.states.length; i++) {
+            const state = simulationData.states[i];
+            if (state.frame) {
+                const img = new window.Image();
+                img.src = "data:image/jpeg;base64," + state.frame;
+                frameImages.push(img);
+            } else {
+                frameImages.push(null);
+            }
+        }
+        // Wait for first few frames to load
+        await new Promise(r => setTimeout(r, 100));
     }
 
     async function compareStyles() {
@@ -392,158 +416,59 @@
         document.getElementById("btnCompare").disabled = false;
     }
 
-    // ==================== Road Rendering ====================
+    // ==================== Frame Rendering ====================
 
     const canvas = document.getElementById("roadCanvas");
     const ctx = canvas.getContext("2d");
 
-    function drawRoad(state) {
+    function drawFrame(state, frameIdx) {
         const W = canvas.width;
         const H = canvas.height;
-        const laneW = W / 3;
-        const egoY = state.ego.y;
 
-        // Background
+        // Clear canvas
         ctx.fillStyle = "#1a1a2e";
         ctx.fillRect(0, 0, W, H);
 
-        // Road surface
-        ctx.fillStyle = "#2a2a3e";
-        ctx.fillRect(20, 0, W - 40, H);
-
-        // Lane markings
-        ctx.setLineDash([20, 15]);
-        ctx.strokeStyle = "#444";
-        ctx.lineWidth = 2;
-        for (let i = 1; i < 3; i++) {
-            const x = 20 + i * ((W - 40) / 3);
-            ctx.beginPath();
-            const offset = (egoY * 4) % 35;
-            ctx.moveTo(x, -offset);
-            ctx.lineTo(x, H);
-            ctx.stroke();
-        }
-        ctx.setLineDash([]);
-
-        // Road edges
-        ctx.strokeStyle = "#ffaa00";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(20, 0); ctx.lineTo(20, H);
-        ctx.moveTo(W - 20, 0); ctx.lineTo(W - 20, H);
-        ctx.stroke();
-
-        // Draw NPC vehicles
-        const roadW = W - 40;
-
-        // Draw trajectory history
-        if (trajectoryHistory.length > 1) {
-            ctx.beginPath();
-            ctx.strokeStyle = "#00d4ff55";
-            ctx.lineWidth = 2;
-            ctx.setLineDash([]);
-            for (let i = 0; i < trajectoryHistory.length; i++) {
-                const pt = trajectoryHistory[i];
-                const tx = 20 + (pt.lane + 0.5) * (roadW / 3);
-                const ty = H / 2 - (pt.y - egoY) * 4;
-                if (ty < -10 || ty > H + 10) continue;
-                if (i === 0 || trajectoryHistory[i - 1].y < egoY - H / 8) {
-                    ctx.moveTo(tx, ty);
-                } else {
-                    ctx.lineTo(tx, ty);
-                }
-            }
-            ctx.stroke();
-
-            // Draw fading trail dots for lane change moments
-            for (let i = 1; i < trajectoryHistory.length; i++) {
-                const pt = trajectoryHistory[i];
-                const prev = trajectoryHistory[i - 1];
-                if (pt.lane !== prev.lane) {
-                    const tx = 20 + (pt.lane + 0.5) * (roadW / 3);
-                    const ty = H / 2 - (pt.y - egoY) * 4;
-                    if (ty >= 0 && ty <= H) {
-                        ctx.beginPath();
-                        ctx.arc(tx, ty, 3, 0, Math.PI * 2);
-                        ctx.fillStyle = "#00ffaa88";
-                        ctx.fill();
-                    }
-                }
-            }
-        }
-        for (const npc of state.npcs) {
-            const nx = 20 + (npc.lane + 0.5) * (roadW / 3);
-            const ny = H / 2 - (npc.y - egoY) * 4;
-
-            if (ny < -40 || ny > H + 40) continue;
-
-            // NPC car body
-            ctx.fillStyle = "#ff6644";
-            ctx.shadowColor = "#ff664466";
-            ctx.shadowBlur = 8;
-            roundRect(ctx, nx - 15, ny - 22, 30, 44, 6);
-            ctx.fill();
-            ctx.shadowBlur = 0;
-
-            // NPC windshield
-            ctx.fillStyle = "#1a1a2e";
-            roundRect(ctx, nx - 10, ny - 16, 20, 12, 3);
-            ctx.fill();
+        // Draw the CarRacing frame image
+        const img = frameImages[frameIdx];
+        if (img && img.complete && img.naturalWidth > 0) {
+            // Scale 96x96 to fill canvas with smooth interpolation
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(img, 0, 0, W, H);
+        } else {
+            // Fallback: show placeholder
+            ctx.fillStyle = "#333";
+            ctx.font = "16px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("Loading frame...", W / 2, H / 2);
         }
 
-        // Draw ego vehicle
-        const ex = 20 + (state.ego.lane + 0.5) * (roadW / 3);
-        const ey = H / 2;
+        // HUD overlay on top of the frame
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+        ctx.fillRect(0, 0, W, 60);
 
-        // Ego glow
-        ctx.shadowColor = "#00d4ff88";
-        ctx.shadowBlur = 15;
         ctx.fillStyle = "#00d4ff";
-        roundRect(ctx, ex - 16, ey - 24, 32, 48, 7);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-
-        // Ego detail
-        ctx.fillStyle = "#0088aa";
-        roundRect(ctx, ex - 11, ey - 18, 22, 14, 3);
-        ctx.fill();
-
-        // Speed indicator
-        ctx.fillStyle = "#fff";
-        ctx.font = "bold 11px monospace";
-        ctx.textAlign = "center";
-        ctx.fillText(state.ego.speed.toFixed(1), ex, ey + 12);
-
-        // HUD overlay
-        ctx.fillStyle = "#ffffff88";
-        ctx.font = "12px monospace";
+        ctx.font = "bold 13px monospace";
         ctx.textAlign = "left";
-        ctx.fillText(`Step: ${state.step}`, 30, 25);
-        ctx.fillText(`Speed: ${state.ego.speed.toFixed(1)}`, 30, 42);
-        ctx.fillText(`Lane: ${state.ego.lane + 1}`, 30, 59);
-    }
+        ctx.fillText(`Step: ${state.step}`, 12, 20);
+        ctx.fillText(`Speed: ${state.speed.toFixed(1)}`, 12, 38);
+        ctx.fillText(`Reward: ${state.cumulative_reward.toFixed(1)}`, 12, 56);
 
-    function roundRect(ctx, x, y, w, h, r) {
-        ctx.beginPath();
-        ctx.moveTo(x + r, y);
-        ctx.lineTo(x + w - r, y);
-        ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-        ctx.lineTo(x + w, y + h - r);
-        ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-        ctx.lineTo(x + r, y + h);
-        ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-        ctx.lineTo(x, y + r);
-        ctx.quadraticCurveTo(x, y, x + r, y);
-        ctx.closePath();
+        ctx.textAlign = "right";
+        ctx.fillStyle = "#44ff88";
+        ctx.fillText(`Tiles: ${state.tiles_visited}`, W - 12, 20);
+        ctx.fillStyle = state.off_track_count > 0 ? "#ff4444" : "#888";
+        ctx.fillText(`Off-track: ${state.off_track_count}`, W - 12, 38);
+        ctx.fillStyle = "#ffaa00";
+        ctx.fillText(`Action: ${state.action_name}`, W - 12, 56);
     }
 
     // ==================== Playback ====================
 
     function startPlayback() {
-        if (animationId) cancelAnimationFrame(animationId);
+        if (animationId) clearTimeout(animationId);
         currentFrame = 0;
         isPaused = false;
-        trajectoryHistory = [];
         document.getElementById("btnPause").disabled = false;
         document.getElementById("btnReset").disabled = false;
         document.getElementById("btnPause").textContent = "⏸ 暂停";
@@ -557,9 +482,7 @@
         const speed = parseInt(document.getElementById("speedSlider").value);
         const state = simulationData.states[currentFrame];
 
-        trajectoryHistory.push({ lane: state.ego.lane, y: state.ego.y });
-
-        drawRoad(state);
+        drawFrame(state, currentFrame);
         updateStats(state);
         drawRewardChart(simulationData.rewards.slice(0, currentFrame + 1));
         drawSpeedChart(simulationData.states.slice(0, currentFrame + 1));
@@ -585,13 +508,12 @@
 
     function resetView() {
         if (animationId) {
-            cancelAnimationFrame(animationId);
             clearTimeout(animationId);
         }
         currentFrame = 0;
         isPaused = false;
         simulationData = null;
-        trajectoryHistory = [];
+        frameImages = [];
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         document.getElementById("btnPause").disabled = true;
         document.getElementById("btnReset").disabled = true;
@@ -646,8 +568,8 @@
         cx.clearRect(0, 0, W, H);
         if (states.length < 2) return;
 
-        const speeds = states.map(s => s.ego.speed);
-        const max = 8;
+        const speeds = states.map(s => s.speed);
+        const max = Math.max(...speeds, 1);
 
         cx.strokeStyle = "#ffffff11";
         cx.lineWidth = 1;
@@ -726,9 +648,9 @@
 
     function updateStats(state) {
         document.getElementById("statReward").textContent = state.cumulative_reward.toFixed(1);
-        document.getElementById("statSpeed").textContent = state.ego.speed.toFixed(1);
-        document.getElementById("statOvertakes").textContent = state.overtakes;
-        document.getElementById("statCollisions").textContent = state.collisions;
+        document.getElementById("statSpeed").textContent = state.speed.toFixed(1);
+        document.getElementById("statOvertakes").textContent = state.tiles_visited || state.overtakes || 0;
+        document.getElementById("statCollisions").textContent = state.off_track_count || state.collisions || 0;
     }
 
     function setStatus(type, text) {
@@ -756,13 +678,6 @@
 
     setStatus("ready", "就绪");
     fetchModels();
-
-    // Draw initial empty road
-    drawRoad({
-        ego: { lane: 1, y: 0, speed: 0 },
-        npcs: [],
-        step: 0,
-    });
     </script>
 </body>
 </html>

@@ -3,7 +3,7 @@ Flask backend service for the autonomous driving simulator.
 
 Provides REST APIs for:
 - Listing available models
-- Running simulation episodes
+- Running simulation episodes with CarRacing environment
 - Streaming simulation state step-by-step
 """
 
@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from stable_baselines3 import DQN
+from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack, VecTransposeImage
 import gymnasium as gym
 import numpy as np
 
@@ -26,12 +27,28 @@ CORS(app)
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
 
+ACTION_NAMES = ["keep", "left", "right", "accelerate", "brake"]
+
 
 def load_model(style):
     model_path = os.path.join(MODELS_DIR, style, "dqn_highway.zip")
     if not os.path.exists(model_path):
         return None
     return DQN.load(model_path)
+
+
+def make_env(style):
+    def _init():
+        return gym.make("HighwayDriving-v0", style=style)
+    return _init
+
+
+def create_vec_env(style):
+    """Create vectorized env matching training setup (frame stacking)."""
+    vec_env = DummyVecEnv([make_env(style)])
+    vec_env = VecTransposeImage(vec_env)
+    vec_env = VecFrameStack(vec_env, n_stack=4)
+    return vec_env
 
 
 @app.route("/")
@@ -74,35 +91,37 @@ def simulate():
     if model is None:
         return jsonify({"error": f"Model '{style}' not found. Train it first."}), 404
 
-    env_instance = gym.make("HighwayDriving-v0", style=style)
-    obs, _ = env_instance.reset()
+    # Use vectorized env with frame stacking (same as training)
+    vec_env = create_vec_env(style)
+    # Also keep a reference to the raw env for get_state_for_render
+    raw_env = vec_env.envs[0].unwrapped
+
+    obs = vec_env.reset()
 
     states = []
     rewards = []
-    actions = []
     cumulative_reward = 0
 
     for step in range(max_steps):
         action, _ = model.predict(obs, deterministic=True)
-        action = int(action)
+        obs, reward_arr, done_arr, info_arr = vec_env.step(action)
 
-        obs, reward, terminated, truncated, info = env_instance.step(action)
+        reward = float(reward_arr[0])
         cumulative_reward += reward
 
-        state = env_instance.unwrapped.get_state_for_render()
-        state["reward"] = float(reward)
+        state = raw_env.get_state_for_render()
+        state["reward"] = reward
         state["cumulative_reward"] = float(cumulative_reward)
-        state["action"] = action
-        state["action_name"] = ["keep", "accelerate", "brake", "left", "right"][action]
+        state["action"] = int(action[0])
+        state["action_name"] = ACTION_NAMES[int(action[0])]
 
         states.append(state)
         rewards.append(float(cumulative_reward))
-        actions.append(action)
 
-        if terminated or truncated:
+        if done_arr[0]:
             break
 
-    env_instance.close()
+    vec_env.close()
 
     return jsonify({
         "style": style,
@@ -141,30 +160,31 @@ def compare_styles():
         if model is None:
             continue
 
-        env_instance = gym.make("HighwayDriving-v0", style=style)
-        obs, _ = env_instance.reset(seed=42)
+        vec_env = create_vec_env(style)
+        raw_env = vec_env.envs[0].unwrapped
+        obs = vec_env.reset()
 
         cumulative_reward = 0
         rewards_over_time = []
 
         for step in range(max_steps):
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, _ = env_instance.step(int(action))
-            cumulative_reward += reward
+            obs, reward_arr, done_arr, _ = vec_env.step(action)
+            cumulative_reward += float(reward_arr[0])
             rewards_over_time.append(float(cumulative_reward))
 
-            if terminated or truncated:
+            if done_arr[0]:
                 break
 
-        state = env_instance.unwrapped.get_state_for_render()
-        env_instance.close()
+        state = raw_env.get_state_for_render()
+        vec_env.close()
 
         results[style] = {
             "total_reward": float(cumulative_reward),
             "steps": len(rewards_over_time),
             "overtakes": state["overtakes"],
             "collisions": state["collisions"],
-            "avg_speed": state["ego"]["speed"],
+            "avg_speed": state["speed"],
             "rewards_over_time": rewards_over_time,
         }
 

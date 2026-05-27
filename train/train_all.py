@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from train.train_dqn import train
 
 
-def train_all(timesteps=50000):
+def train_all(timesteps=100000):
     styles = ["aggressive", "conservative", "balanced"]
     for style in styles:
         print(f"\n{'#'*60}")
