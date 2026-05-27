@@ -109,7 +109,12 @@ class HighwayDrivingEnv(gym.Env):
                 if self.ego["y"] > npc["y"] + 2.0:
                     self._passed_npcs.add(i)
                     self.overtake_count += 1
-                    reward += 5.0
+                    if self.style == "aggressive":
+                        reward += 10.0
+                    elif self.style == "conservative":
+                        reward += 2.0
+                    else:
+                        reward += 5.0
 
         # Check collision
         collision = False
@@ -120,18 +125,32 @@ class HighwayDrivingEnv(gym.Env):
                 break
 
         if collision:
-            reward -= 20.0
+            if self.style == "conservative":
+                reward -= 40.0
+            elif self.style == "aggressive":
+                reward -= 10.0
+            else:
+                reward -= 20.0
             self.collision_count += 1
 
-        # Lane keeping reward
-        reward += 0.5
-
-        # Speed reward (encourage faster driving)
-        reward += self.ego["speed"] * 0.1
-
-        # Penalty for lane changes (smoothness)
-        if action in [3, 4]:
-            reward -= 0.3
+        # Style-dependent rewards
+        if self.style == "aggressive":
+            reward += 0.2
+            reward += self.ego["speed"] * 0.3
+            if action in [3, 4]:
+                reward -= 0.1
+        elif self.style == "conservative":
+            reward += 1.0
+            reward += self.ego["speed"] * 0.05
+            if action in [3, 4]:
+                reward -= 1.0
+            if action == 0:
+                reward += 0.3
+        else:
+            reward += 0.5
+            reward += self.ego["speed"] * 0.1
+            if action in [3, 4]:
+                reward -= 0.3
 
         # Respawn NPCs that are too far behind
         for npc in self.npcs:

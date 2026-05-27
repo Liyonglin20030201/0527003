@@ -322,6 +322,7 @@
     let currentFrame = 0;
     let animationId = null;
     let isPaused = false;
+    let trajectoryHistory = [];
 
     // ==================== API Calls ====================
 
@@ -434,6 +435,42 @@
 
         // Draw NPC vehicles
         const roadW = W - 40;
+
+        // Draw trajectory history
+        if (trajectoryHistory.length > 1) {
+            ctx.beginPath();
+            ctx.strokeStyle = "#00d4ff55";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([]);
+            for (let i = 0; i < trajectoryHistory.length; i++) {
+                const pt = trajectoryHistory[i];
+                const tx = 20 + (pt.lane + 0.5) * (roadW / 3);
+                const ty = H / 2 - (pt.y - egoY) * 4;
+                if (ty < -10 || ty > H + 10) continue;
+                if (i === 0 || trajectoryHistory[i - 1].y < egoY - H / 8) {
+                    ctx.moveTo(tx, ty);
+                } else {
+                    ctx.lineTo(tx, ty);
+                }
+            }
+            ctx.stroke();
+
+            // Draw fading trail dots for lane change moments
+            for (let i = 1; i < trajectoryHistory.length; i++) {
+                const pt = trajectoryHistory[i];
+                const prev = trajectoryHistory[i - 1];
+                if (pt.lane !== prev.lane) {
+                    const tx = 20 + (pt.lane + 0.5) * (roadW / 3);
+                    const ty = H / 2 - (pt.y - egoY) * 4;
+                    if (ty >= 0 && ty <= H) {
+                        ctx.beginPath();
+                        ctx.arc(tx, ty, 3, 0, Math.PI * 2);
+                        ctx.fillStyle = "#00ffaa88";
+                        ctx.fill();
+                    }
+                }
+            }
+        }
         for (const npc of state.npcs) {
             const nx = 20 + (npc.lane + 0.5) * (roadW / 3);
             const ny = H / 2 - (npc.y - egoY) * 4;
@@ -506,6 +543,7 @@
         if (animationId) cancelAnimationFrame(animationId);
         currentFrame = 0;
         isPaused = false;
+        trajectoryHistory = [];
         document.getElementById("btnPause").disabled = false;
         document.getElementById("btnReset").disabled = false;
         document.getElementById("btnPause").textContent = "⏸ 暂停";
@@ -518,6 +556,8 @@
 
         const speed = parseInt(document.getElementById("speedSlider").value);
         const state = simulationData.states[currentFrame];
+
+        trajectoryHistory.push({ lane: state.ego.lane, y: state.ego.y });
 
         drawRoad(state);
         updateStats(state);
@@ -551,6 +591,7 @@
         currentFrame = 0;
         isPaused = false;
         simulationData = null;
+        trajectoryHistory = [];
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         document.getElementById("btnPause").disabled = true;
         document.getElementById("btnReset").disabled = true;
